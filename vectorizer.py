@@ -23,10 +23,10 @@ from transformers import (
 )
 from cachetools import cached
 
-
 # limit transformer batch size to limit parallel inference, otherwise we run
 # into memory problems
 MAX_BATCH_SIZE = 25  # TODO: take from config
+DEFAULT_LANGUAGE = "chinese"  # TODO: take from config
 DEFAULT_POOL_METHOD = "masked_mean"
 
 
@@ -40,8 +40,8 @@ class VectorInputConfig(BaseModel):
     def __eq__(self, other):
         if isinstance(other, VectorInputConfig):
             return (
-                self.pooling_strategy == other.pooling_strategy
-                and self.task_type == other.task_type
+                    self.pooling_strategy == other.pooling_strategy
+                    and self.task_type == other.task_type
             )
         return False
 
@@ -63,20 +63,20 @@ class Vectorizer:
     executor: ThreadPoolExecutor
 
     def __init__(
-        self,
-        model_path: str,
-        cuda_support: bool,
-        cuda_core: str,
-        cuda_per_process_memory_fraction: float,
-        model_type: str,
-        architecture: str,
-        direct_tokenize: bool,
-        onnx_runtime: bool,
-        use_sentence_transformers_vectorizer: bool,
-        use_sentence_transformers_multi_process: bool,
-        model_name: str,
-        trust_remote_code: bool,
-        workers: int | None,
+            self,
+            model_path: str,
+            cuda_support: bool,
+            cuda_core: str,
+            cuda_per_process_memory_fraction: float,
+            model_type: str,
+            architecture: str,
+            direct_tokenize: bool,
+            onnx_runtime: bool,
+            use_sentence_transformers_vectorizer: bool,
+            use_sentence_transformers_multi_process: bool,
+            model_name: str,
+            trust_remote_code: bool,
+            workers: int | None,
     ):
         self.executor = ThreadPoolExecutor()
         if onnx_runtime:
@@ -115,6 +115,18 @@ class Vectorizer:
             self.executor.submit(self.vectorizer.vectorize, text, config)
         )
 
+    async def batch_vectorize(self, item: List[VectorInput], worker: int = 0):
+        if isinstance(self.vectorizer, SentenceTransformerVectorizer):
+            loop = asyncio.get_event_loop()
+            f = loop.run_in_executor(
+                self.executor, self.vectorizer.batch_vectorize, item, worker
+            )
+            return await asyncio.wrap_future(f)
+
+        return await asyncio.wrap_future(
+            self.executor.submit(self.vectorizer.batch_vectorize, item)
+        )
+
 
 class SentenceTransformerVectorizer:
     workers: List[SentenceTransformer]
@@ -125,13 +137,13 @@ class SentenceTransformerVectorizer:
     logger: Logger
 
     def __init__(
-        self,
-        model_path: str,
-        model_name: str,
-        cuda_core: str,
-        trust_remote_code: bool,
-        use_sentence_transformers_multi_process: bool,
-        workers: int | None,
+            self,
+            model_path: str,
+            model_name: str,
+            cuda_core: str,
+            trust_remote_code: bool,
+            use_sentence_transformers_multi_process: bool,
+            workers: int | None,
     ):
         self.logger = getLogger("uvicorn")
         self.cuda_core = cuda_core
@@ -171,14 +183,14 @@ class SentenceTransformerVectorizer:
             return self.cuda_core.split(",")
 
     def get_devices(
-        self,
-        workers: int | None,
-        use_sentence_transformers_multi_process: bool,
+            self,
+            workers: int | None,
+            use_sentence_transformers_multi_process: bool,
     ) -> List[str | None]:
         if (
-            not self.use_sentence_transformers_multi_process
-            and self.cuda_core is not None
-            and self.cuda_core != ""
+                not self.use_sentence_transformers_multi_process
+                and self.cuda_core is not None
+                and self.cuda_core != ""
         ):
             return self.cuda_core.split(",")
         if use_sentence_transformers_multi_process or workers is None or workers < 1:
@@ -200,7 +212,11 @@ class SentenceTransformerVectorizer:
             convert_to_numpy=True,
             normalize_embeddings=True,
         )
-        return embedding[0]
+        return embedding
+
+    @cached(cache=get_cache_settings())
+    def batch_vectorize(self, item: List[VectorInput], worker: int = 0):
+        pass
 
 
 class ONNXVectorizer:
@@ -244,7 +260,10 @@ class ONNXVectorizer:
 
         # Normalize embeddings
         sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
-        return sentence_embeddings[0]
+        return sentence_embeddings
+
+    def batch_vectorize(self, item: List[VectorInput]):
+        pass
 
 
 class HuggingFaceVectorizer:
@@ -257,15 +276,15 @@ class HuggingFaceVectorizer:
     trust_remote_code: bool
 
     def __init__(
-        self,
-        model_path: str,
-        cuda_support: bool,
-        cuda_core: str,
-        cuda_per_process_memory_fraction: float,
-        model_type: str,
-        architecture: str,
-        direct_tokenize: bool,
-        trust_remote_code: bool,
+            self,
+            model_path: str,
+            cuda_support: bool,
+            cuda_core: str,
+            cuda_per_process_memory_fraction: float,
+            model_type: str,
+            architecture: str,
+            direct_tokenize: bool,
+            trust_remote_code: bool,
     ):
         self.cuda = cuda_support
         self.cuda_core = cuda_core
@@ -312,38 +331,31 @@ class HuggingFaceVectorizer:
 
     def vectorize(self, text: str, config: VectorInputConfig):
         with torch.no_grad():
-            if self.direct_tokenize:
-                # create embeddings without tokenizing text
-                tokens = self.tokenize(text)
-                if self.cuda:
-                    tokens.to(self.cuda_core)
-                batch_results = self.get_batch_results(tokens, text)
-                batch_sum_vectors = self.pool_embedding(batch_results, tokens, config)
-                return batch_sum_vectors.detach()
-            else:
-                # tokenize text
-                sentences = sent_tokenize(
-                    " ".join(
-                        text.split(),
-                    )
-                )
-                num_sentences = len(sentences)
-                number_of_batch_vectors = math.ceil(num_sentences / MAX_BATCH_SIZE)
-                batch_sum_vectors = 0
-                for i in range(0, number_of_batch_vectors):
-                    start_index = i * MAX_BATCH_SIZE
-                    end_index = start_index + MAX_BATCH_SIZE
+            # create embeddings without tokenizing text
+            tokens = self.tokenize(text)
+            if self.cuda:
+                tokens.to(self.cuda_core)
+            batch_results = self.get_batch_results(tokens, text)
+            batch_sum_vectors = self.pool_embedding(batch_results, tokens, config)
+            return batch_sum_vectors.detach()
 
-                    tokens = self.tokenize(sentences[start_index:end_index])
-                    if self.cuda:
-                        tokens.to(self.cuda_core)
-                    batch_results = self.get_batch_results(
-                        tokens, sentences[start_index:end_index]
-                    )
-                    batch_sum_vectors += self.pool_embedding(
-                        batch_results, tokens, config
-                    )
-                return batch_sum_vectors.detach() / num_sentences
+    def batch_vectorize(self, item: List[VectorInput]):
+        texts = [i.text for i in item]
+        configs = [i.config for i in item]
+        with torch.no_grad():
+            # create embeddings without tokenizing text
+            tokens = self.tokenize(texts)
+            if self.cuda:
+                tokens.to(self.cuda_core)
+            batch_results = self.get_batch_results(tokens, texts)
+
+            batch_size = len(texts)
+            f_dim = batch_results[0].shape[-1]
+            batch_sum_vectors = torch.zeros(batch_size, f_dim)
+            for i in range(len(configs)):
+                batch_sum_vectors[i] = self.pool_embedding(batch_results, tokens, configs[i])[0]
+
+            return batch_sum_vectors.detach()
 
 
 class HFModel:
@@ -377,7 +389,7 @@ class HFModel:
     def pool_embedding(self, batch_results, tokens, config: VectorInputConfig):
         pooling_method = self.pool_method_from_config(config)
         if pooling_method == "cls":
-            return self.get_embeddings(batch_results)[:, 0, :].sum(0)
+            return self.get_embeddings(batch_results)[:, 0, :]
         elif pooling_method == "masked_mean":
             return self.pool_sum(
                 self.get_embeddings(batch_results), tokens["attention_mask"]
@@ -416,17 +428,17 @@ class HFModel:
             embeddings, input_mask_expanded
         )
         sentences = sum_embeddings / sum_mask
-        return sentences.sum(0)
+        return sentences
 
 
 class DPRModel(HFModel):
 
     def __init__(
-        self,
-        architecture: str,
-        cuda_support: bool,
-        cuda_core: str,
-        trust_remote_code: bool,
+            self,
+            architecture: str,
+            cuda_support: bool,
+            cuda_core: str,
+            trust_remote_code: bool,
     ):
         super().__init__(cuda_support, cuda_core, trust_remote_code)
         self.model = None
@@ -498,11 +510,11 @@ class ModelFactory:
 
     @staticmethod
     def model(
-        model_type,
-        architecture,
-        cuda_support: bool,
-        cuda_core: str,
-        trust_remote_code: bool,
+            model_type,
+            architecture,
+            cuda_support: bool,
+            cuda_core: str,
+            trust_remote_code: bool,
     ):
         if model_type == "t5":
             return T5Model(cuda_support, cuda_core, trust_remote_code)

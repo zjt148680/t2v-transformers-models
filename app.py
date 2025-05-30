@@ -14,7 +14,6 @@ from vectorizer import Vectorizer, VectorInput
 from meta import Meta
 import torch
 
-
 logger = getLogger("uvicorn")
 
 vec: Vectorizer
@@ -28,7 +27,7 @@ available_workers = 1
 
 def is_authorized(auth: Optional[HTTPAuthorizationCredentials]) -> bool:
     if allowed_tokens is not None and (
-        auth is None or auth.credentials not in allowed_tokens
+            auth is None or auth.credentials not in allowed_tokens
     ):
         return False
     return True
@@ -119,9 +118,9 @@ async def lifespan(app: FastAPI):
         cuda_core = os.getenv("CUDA_CORE")
         if cuda_core is None or cuda_core == "":
             if (
-                use_sentence_transformers_vectorizer
-                and use_sentence_transformers_multi_process
-                and torch.cuda.is_available()
+                    use_sentence_transformers_vectorizer
+                    and use_sentence_transformers_multi_process
+                    and torch.cuda.is_available()
             ):
                 available_workers = torch.cuda.device_count()
                 cuda_core = ",".join([f"cuda:{i}" for i in range(available_workers)])
@@ -176,8 +175,8 @@ async def live_and_ready(response: Response):
 
 @app.get("/meta")
 def meta(
-    response: Response,
-    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+        response: Response,
+        auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
 ):
     if is_authorized(auth):
         return meta_config.get()
@@ -189,14 +188,36 @@ def meta(
 @app.post("/vectors")
 @app.post("/vectors/")
 async def vectorize(
-    item: VectorInput,
-    response: Response,
-    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+        item: VectorInput,
+        response: Response,
+        auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
 ):
     if is_authorized(auth):
         try:
             vector = await vec.vectorize(item.text, item.config, get_worker())
-            return {"text": item.text, "vector": vector.tolist(), "dim": len(vector)}
+            return {"text": item.text, "vector": vector[0].tolist(), "dim": len(vector[0])}
+        except Exception as e:
+            logger.exception("Something went wrong while vectorizing data.")
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            return {"error": str(e)}
+    else:
+        response.status_code = status.HTTP_401_UNAUTHORIZED
+        return {"error": "Unauthorized"}
+
+
+@app.post("/vectors/batch")
+@app.post("/vectors/batch/")
+async def vectorize(
+        item: List[VectorInput],
+        response: Response,
+        auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+):
+    if is_authorized(auth):
+        try:
+            vector = await vec.batch_vectorize(item, get_worker())
+            return [
+                {"text": item[i].text, "vector": vector[i].tolist(), "dim": len(vector[i])} for i in range(len(item))
+            ]
         except Exception as e:
             logger.exception("Something went wrong while vectorizing data.")
             response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR

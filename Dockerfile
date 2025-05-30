@@ -20,7 +20,7 @@ ARG TRUST_REMOTE_CODE
 ARG USE_SENTENCE_TRANSFORMERS_VECTORIZER
 RUN mkdir nltk_data
 COPY download.py .
-RUN ./download.py
+RUN python3 ./download.py
 
 FROM base_image AS t2v_transformers
 
@@ -31,3 +31,5 @@ COPY . .
 
 ENTRYPOINT ["/bin/sh", "-c"]
 CMD ["uvicorn app:app --host 0.0.0.0 --port 8080"]
+
+# docker build --build-arg "MODEL_NAME=sentence-transformers/multi-qa-MiniLM-L6-cos-v1" --build-arg "ONNX_RUNTIME=false" --build-arg "TRUST_REMOTE_CODE=false" --build-arg "USE_SENTENCE_TRANSFORMERS_VECTORIZER=false" --build-arg "HTTP_PROXY=http://host.docker.internal:10809" --build-arg "HTTPS_PROXY=http://host.docker.internal:10809" --build-arg "NO_PROXY=localhost,127.0.0.1,host.docker.internal" -t "custom-t2v-transformers:sentence-transformers-multi-qa-MiniLM-L6-cos-v1" .
