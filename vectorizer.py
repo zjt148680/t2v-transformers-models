@@ -59,6 +59,19 @@ class VectorInput(BaseModel):
         return False
 
 
+class BatchVectorInput(BaseModel):
+    texts: List[str]
+    config: Optional[VectorInputConfig] = None
+
+    def __hash__(self):
+        return hash((self.texts, self.config))
+
+    def __eq__(self, other):
+        if isinstance(other, BatchVectorInput):
+            return self.texts == other.texts and self.config == other.config
+        return False
+
+
 class Vectorizer:
     executor: ThreadPoolExecutor
 
@@ -115,16 +128,16 @@ class Vectorizer:
             self.executor.submit(self.vectorizer.vectorize, text, config)
         )
 
-    async def batch_vectorize(self, item: List[VectorInput], worker: int = 0):
+    async def batch_vectorize(self, texts: List[str], config: VectorInputConfig, worker: int = 0):
         if isinstance(self.vectorizer, SentenceTransformerVectorizer):
             loop = asyncio.get_event_loop()
             f = loop.run_in_executor(
-                self.executor, self.vectorizer.batch_vectorize, item, worker
+                self.executor, self.vectorizer.batch_vectorize, texts, config, worker
             )
             return await asyncio.wrap_future(f)
 
         return await asyncio.wrap_future(
-            self.executor.submit(self.vectorizer.batch_vectorize, item)
+            self.executor.submit(self.vectorizer.batch_vectorize, texts, config)
         )
 
 
@@ -215,7 +228,7 @@ class SentenceTransformerVectorizer:
         return embedding
 
     @cached(cache=get_cache_settings())
-    def batch_vectorize(self, item: List[VectorInput], worker: int = 0):
+    def batch_vectorize(self, texts: List[str], config: VectorInputConfig, worker: int = 0):
         pass
 
 
@@ -262,7 +275,7 @@ class ONNXVectorizer:
         sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
         return sentence_embeddings
 
-    def batch_vectorize(self, item: List[VectorInput]):
+    def batch_vectorize(self, texts: List[str], config: VectorInputConfig):
         pass
 
 
@@ -310,7 +323,7 @@ class HuggingFaceVectorizer:
 
         nltk.data.path.append("./nltk_data")
 
-    def tokenize(self, text: str):
+    def tokenize(self, text: str | List[str]):
         return self.tokenizer(
             text,
             padding=True,
@@ -339,9 +352,7 @@ class HuggingFaceVectorizer:
             batch_sum_vectors = self.pool_embedding(batch_results, tokens, config)
             return batch_sum_vectors.detach()
 
-    def batch_vectorize(self, item: List[VectorInput]):
-        texts = [i.text for i in item]
-        configs = [i.config for i in item]
+    def batch_vectorize(self, texts: List[str], config: VectorInputConfig):
         with torch.no_grad():
             # create embeddings without tokenizing text
             tokens = self.tokenize(texts)
@@ -351,9 +362,7 @@ class HuggingFaceVectorizer:
 
             batch_size = len(texts)
             f_dim = batch_results[0].shape[-1]
-            batch_sum_vectors = torch.zeros(batch_size, f_dim)
-            for i in range(len(configs)):
-                batch_sum_vectors[i] = self.pool_embedding(batch_results, tokens, configs[i])[0]
+            batch_sum_vectors = self.pool_embedding(batch_results, tokens, config)
 
             return batch_sum_vectors.detach()
 

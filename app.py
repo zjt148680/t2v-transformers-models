@@ -10,7 +10,7 @@ from config import (
     get_use_sentence_transformers_multi_process,
     get_t2v_transformers_direct_tokenize,
 )
-from vectorizer import Vectorizer, VectorInput
+from vectorizer import Vectorizer, VectorInput, BatchVectorInput
 from meta import Meta
 import torch
 
@@ -208,15 +208,16 @@ async def vectorize(
 @app.post("/vectors/batch")
 @app.post("/vectors/batch/")
 async def vectorize(
-        item: List[VectorInput],
+        item: BatchVectorInput,
         response: Response,
         auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
 ):
     if is_authorized(auth):
         try:
-            vector = await vec.batch_vectorize(item, get_worker())
+            vectors = await vec.batch_vectorize(item.texts, item.config, get_worker())
             return [
-                {"text": item[i].text, "vector": vector[i].tolist(), "dim": len(vector[i])} for i in range(len(item))
+                {"text": item.texts[i], "vector": vectors[i].tolist(), "dim": len(vectors[i])}
+                for i in range(len(item.texts))
             ]
         except Exception as e:
             logger.exception("Something went wrong while vectorizing data.")
