@@ -1,75 +1,28 @@
 import asyncio
-import math
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from typing import Optional, Any, Literal, List
 from logging import getLogger, Logger
-from config import get_cache_settings
+from pathlib import Path
+from typing import Any, Literal, List
 
 import nltk
 import torch
 import torch.nn.functional as F
-from nltk.tokenize import sent_tokenize
+from cachetools import cached
 from optimum.onnxruntime import ORTModelForFeatureExtraction
-from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from transformers import (
     AutoModel,
     AutoTokenizer,
-    DPRContextEncoder,
-    DPRQuestionEncoder,
-    T5ForConditionalGeneration,
-    T5Tokenizer,
 )
-from cachetools import cached
+
+from RequestParams import VectorInputConfig
+from config import get_cache_settings
+from models import ModelFactory, HFModel
 
 # limit transformer batch size to limit parallel inference, otherwise we run
 # into memory problems
 MAX_BATCH_SIZE = 25  # TODO: take from config
 DEFAULT_LANGUAGE = "chinese"  # TODO: take from config
-DEFAULT_POOL_METHOD = "masked_mean"
-
-
-class VectorInputConfig(BaseModel):
-    pooling_strategy: Optional[str] = None
-    task_type: Optional[str] = None
-
-    def __hash__(self):
-        return hash((self.pooling_strategy, self.task_type))
-
-    def __eq__(self, other):
-        if isinstance(other, VectorInputConfig):
-            return (
-                    self.pooling_strategy == other.pooling_strategy
-                    and self.task_type == other.task_type
-            )
-        return False
-
-
-class VectorInput(BaseModel):
-    text: str
-    config: Optional[VectorInputConfig] = None
-
-    def __hash__(self):
-        return hash((self.text, self.config))
-
-    def __eq__(self, other):
-        if isinstance(other, VectorInput):
-            return self.text == other.text and self.config == other.config
-        return False
-
-
-class BatchVectorInput(BaseModel):
-    texts: List[str]
-    config: Optional[VectorInputConfig] = None
-
-    def __hash__(self):
-        return hash((self.texts, self.config))
-
-    def __eq__(self, other):
-        if isinstance(other, BatchVectorInput):
-            return self.texts == other.texts and self.config == other.config
-        return False
 
 
 class Vectorizer:
@@ -103,6 +56,17 @@ class Vectorizer:
                     trust_remote_code,
                     use_sentence_transformers_multi_process,
                     workers,
+                )
+            elif model_type == "qwen3":
+                self.vectorizer = Qwen3Vectorizer(
+                    model_path,
+                    cuda_support,
+                    cuda_core,
+                    cuda_per_process_memory_fraction,
+                    model_type,
+                    architecture,
+                    direct_tokenize,
+                    trust_remote_code,
                 )
             else:
                 self.vectorizer = HuggingFaceVectorizer(
@@ -342,7 +306,7 @@ class HuggingFaceVectorizer:
     def pool_embedding(self, batch_results, tokens, config):
         return self.model_delegate.pool_embedding(batch_results, tokens, config)
 
-    def vectorize(self, text: str, config: VectorInputConfig):
+    def vectorize(self, text: str | List[str], config: VectorInputConfig):
         with torch.no_grad():
             # create embeddings without tokenizing text
             tokens = self.tokenize(text)
@@ -353,181 +317,49 @@ class HuggingFaceVectorizer:
             return batch_sum_vectors.detach()
 
     def batch_vectorize(self, texts: List[str], config: VectorInputConfig):
-        with torch.no_grad():
-            # create embeddings without tokenizing text
-            tokens = self.tokenize(texts)
-            if self.cuda:
-                tokens.to(self.cuda_core)
-            batch_results = self.get_batch_results(tokens, texts)
-
-            batch_size = len(texts)
-            f_dim = batch_results[0].shape[-1]
-            batch_sum_vectors = self.pool_embedding(batch_results, tokens, config)
-
-            return batch_sum_vectors.detach()
+        return self.vectorize(texts, config)
 
 
-class HFModel:
-
-    def __init__(self, cuda_support: bool, cuda_core: str, trust_remote_code: bool):
-        super().__init__()
-        self.model = None
-        self.tokenizer = None
-        self.cuda = cuda_support
-        self.cuda_core = cuda_core
-        self.trust_remote_code = trust_remote_code
-
-    def create_tokenizer(self, model_path):
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=self.trust_remote_code
-        )
-        return self.tokenizer
-
-    def create_model(self, model_path):
-        self.model = AutoModel.from_pretrained(
-            model_path, trust_remote_code=self.trust_remote_code
-        )
-        return self.model
-
-    def get_embeddings(self, batch_results):
-        return batch_results[0]
-
-    def get_batch_results(self, tokens, text):
-        return self.model(**tokens)
-
-    def pool_embedding(self, batch_results, tokens, config: VectorInputConfig):
-        pooling_method = self.pool_method_from_config(config)
-        if pooling_method == "cls":
-            return self.get_embeddings(batch_results)[:, 0, :]
-        elif pooling_method == "masked_mean":
-            return self.pool_sum(
-                self.get_embeddings(batch_results), tokens["attention_mask"]
-            )
-        else:
-            raise Exception(f"invalid pooling method '{pooling_method}'")
-
-    def pool_method_from_config(self, config: VectorInputConfig):
-        if config is None:
-            return DEFAULT_POOL_METHOD
-
-        if config.pooling_strategy is None or config.pooling_strategy == "":
-            return DEFAULT_POOL_METHOD
-
-        return config.pooling_strategy
-
-    def get_sum_embeddings_mask(self, embeddings, input_mask_expanded):
-        if self.cuda:
-            sum_embeddings = torch.sum(embeddings * input_mask_expanded, 1).to(
-                self.cuda_core
-            )
-            sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9).to(
-                self.cuda_core
-            )
-            return sum_embeddings, sum_mask
-        else:
-            sum_embeddings = torch.sum(embeddings * input_mask_expanded, 1)
-            sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-            return sum_embeddings, sum_mask
-
-    def pool_sum(self, embeddings, attention_mask):
-        input_mask_expanded = (
-            attention_mask.unsqueeze(-1).expand(embeddings.size()).float()
-        )
-        sum_embeddings, sum_mask = self.get_sum_embeddings_mask(
-            embeddings, input_mask_expanded
-        )
-        sentences = sum_embeddings / sum_mask
-        return sentences
-
-
-class DPRModel(HFModel):
+class Qwen3Vectorizer(HuggingFaceVectorizer):
+    model: AutoModel
+    tokenizer: AutoTokenizer
+    cuda: bool
+    cuda_core: str
+    model_type: str
+    direct_tokenize: bool
+    trust_remote_code: bool
 
     def __init__(
             self,
-            architecture: str,
+            model_path: str,
             cuda_support: bool,
             cuda_core: str,
+            cuda_per_process_memory_fraction: float,
+            model_type: str,
+            architecture: str,
+            direct_tokenize: bool,
             trust_remote_code: bool,
     ):
-        super().__init__(cuda_support, cuda_core, trust_remote_code)
-        self.model = None
-        self.architecture = architecture
-        self.trust_remote_code = trust_remote_code
-
-    def create_model(self, model_path):
-        if self.architecture == "DPRQuestionEncoder":
-            self.model = DPRQuestionEncoder.from_pretrained(
-                model_path, trust_remote_code=self.trust_remote_code
-            )
-        else:
-            self.model = DPRContextEncoder.from_pretrained(
-                model_path, trust_remote_code=self.trust_remote_code
-            )
-        return self.model
-
-    def get_batch_results(self, tokens, text):
-        return self.model(tokens["input_ids"], tokens["attention_mask"])
-
-    def pool_embedding(self, batch_results, tokens, config: VectorInputConfig):
-        # no pooling needed for DPR
-        return batch_results["pooler_output"][0]
-
-
-class T5Model(HFModel):
-
-    def __init__(self, cuda_support: bool, cuda_core: str, trust_remote_code: bool):
-        super().__init__(cuda_support, cuda_core)
-        self.model = None
-        self.tokenizer = None
-        self.cuda = cuda_support
-        self.cuda_core = cuda_core
-        self.trust_remote_code = trust_remote_code
-
-    def create_model(self, model_path):
-        self.model = T5ForConditionalGeneration.from_pretrained(
-            model_path, trust_remote_code=self.trust_remote_code
-        )
-        return self.model
-
-    def create_tokenizer(self, model_path):
-        self.tokenizer = T5Tokenizer.from_pretrained(
-            model_path, trust_remote_code=self.trust_remote_code
-        )
-        return self.tokenizer
-
-    def get_embeddings(self, batch_results):
-        return batch_results["encoder_last_hidden_state"]
-
-    def get_batch_results(self, tokens, text):
-        input_ids, attention_mask = tokens["input_ids"], tokens["attention_mask"]
-
-        target_encoding = self.tokenizer(
-            text, padding="longest", max_length=500, truncation=True
-        )
-        labels = target_encoding.input_ids
-        if self.cuda:
-            labels = torch.tensor(labels).to(self.cuda_core)
-        else:
-            labels = torch.tensor(labels)
-
-        return self.model(
-            input_ids=input_ids, attention_mask=attention_mask, labels=labels
-        )
-
-
-class ModelFactory:
-
-    @staticmethod
-    def model(
+        super().__init__(
+            model_path,
+            cuda_support,
+            cuda_core,
+            cuda_per_process_memory_fraction,
             model_type,
             architecture,
-            cuda_support: bool,
-            cuda_core: str,
-            trust_remote_code: bool,
-    ):
-        if model_type == "t5":
-            return T5Model(cuda_support, cuda_core, trust_remote_code)
-        elif model_type == "dpr":
-            return DPRModel(architecture, cuda_support, cuda_core, trust_remote_code)
-        else:
-            return HFModel(cuda_support, cuda_core, trust_remote_code)
+            direct_tokenize,
+            trust_remote_code,
+        )
+
+        self.eod_id = self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        self.max_length = 8192
+
+    def tokenize(self, text: str | List[str]):
+        if isinstance(text, str):
+            text = [text]
+        batch_dict = self.tokenizer(text, padding=False, truncation=True, max_length=self.max_length - 2)
+        for seq, att in zip(batch_dict["input_ids"], batch_dict["attention_mask"]):
+            seq.append(self.eod_id)
+            att.append(1)
+        batch_dict = self.tokenizer.pad(batch_dict, padding=True, return_tensors="pt")
+        return batch_dict

@@ -1,4 +1,4 @@
-transformers==4.48.2
+transformers==4.51.2
 fastapi==0.115.8
 uvicorn==0.34.0
 nltk==3.9.1

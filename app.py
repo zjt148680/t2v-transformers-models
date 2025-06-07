@@ -1,18 +1,21 @@
 import os
-from typing import Optional, List
 from logging import getLogger
+from typing import Optional, List
+from typing import Union
+
+import torch
 from fastapi import FastAPI, Depends, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from typing import Union
+
+from RequestParams import VectorInput, BatchVectorInput
 from config import (
     TRUST_REMOTE_CODE,
     get_allowed_tokens,
     get_use_sentence_transformers_multi_process,
     get_t2v_transformers_direct_tokenize,
 )
-from vectorizer import Vectorizer, VectorInput, BatchVectorInput
 from meta import Meta
-import torch
+from vectorizer import Vectorizer
 
 logger = getLogger("uvicorn")
 
@@ -171,7 +174,6 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/.well-known/ready", response_class=Response)
 async def live_and_ready(response: Response):
     response.status_code = status.HTTP_204_NO_CONTENT
-
 
 @app.get("/meta")
 def meta(
