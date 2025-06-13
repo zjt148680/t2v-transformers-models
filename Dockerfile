@@ -32,11 +32,4 @@ COPY . .
 ENTRYPOINT ["/bin/sh", "-c"]
 CMD ["uvicorn app:app --host 0.0.0.0 --port 8080"]
 
-# docker build --build-arg "MODEL_NAME=sentence-transformers/multi-qa-MiniLM-L6-cos-v1" --build-arg "ONNX_RUNTIME=false" --build-arg "TRUST_REMOTE_CODE=false" --build-arg "USE_SENTENCE_TRANSFORMERS_VECTORIZER=false" --build-arg "HTTP_PROXY=http://host.docker.internal:10809" --build-arg "HTTPS_PROXY=http://host.docker.internal:10809" --build-arg "NO_PROXY=localhost,127.0.0.1,host.docker.internal" -t "custom-t2v-transformers:sentence-transformers-multi-qa-MiniLM-L6-cos-v1" .
-
-# 中文
-# docker build --build-arg "MODEL_NAME=DMetaSoul/Dmeta-embedding-zh-small" --build-arg "ONNX_RUNTIME=false" --build-arg "TRUST_REMOTE_CODE=false" --build-arg "USE_SENTENCE_TRANSFORMERS_VECTORIZER=false" --build-arg "HTTP_PROXY=http://host.docker.internal:10809" --build-arg "HTTPS_PROXY=http://host.docker.internal:10809" --build-arg "NO_PROXY=localhost,127.0.0.1,host.docker.internal" -t "custom-t2v-transformers:DMetaSoul-Dmeta-embedding-zh-small" .
 # docker build --build-arg "MODEL_NAME=DMetaSoul/Dmeta-embedding-zh" --build-arg "ONNX_RUNTIME=false" --build-arg "TRUST_REMOTE_CODE=false" --build-arg "USE_SENTENCE_TRANSFORMERS_VECTORIZER=false" --build-arg "HTTP_PROXY=http://host.docker.internal:10809" --build-arg "HTTPS_PROXY=http://host.docker.internal:10809" --build-arg "NO_PROXY=localhost,127.0.0.1,host.docker.internal" -t "custom-t2v-transformers:DMetaSoul-Dmeta-embedding-zh" .
-
-# qwen3
-# docker build --build-arg "MODEL_NAME=Qwen/Qwen3-Embedding-0.6B" --build-arg "ONNX_RUNTIME=false" --build-arg "TRUST_REMOTE_CODE=false" --build-arg "USE_SENTENCE_TRANSFORMERS_VECTORIZER=false" --build-arg "HTTP_PROXY=http://host.docker.internal:10809" --build-arg "HTTPS_PROXY=http://host.docker.internal:10809" --build-arg "NO_PROXY=localhost,127.0.0.1,host.docker.internal" -t "custom-t2v-transformers:Qwen-Qwen3-Embedding-0.6B" .
